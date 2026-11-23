@@ -25,6 +25,7 @@ add_executable(password_manager
   src/vault.cpp
   src/filesystem.cpp
   src/user_input.cpp
+  src/logger.cpp
 )
 
 target_include_directories(password_manager PRIVATE ${CRYPTOPP_INCLUDE_DIR})

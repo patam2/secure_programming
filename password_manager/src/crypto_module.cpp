@@ -23,7 +23,6 @@ namespace {
       return key;
   }
 
-  // The header isn't encrypted, but passing it as associated data makes the tag cover it too.
   std::array<unsigned char, 4 + 16 + 12> makeHeader(const VaultFile& vault) {
       std::array<unsigned char, 4 + 16 + 12> header;
       auto out = std::copy(vault.version.begin(), vault.version.end(), header.begin());

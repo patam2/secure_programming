@@ -6,6 +6,8 @@
 #include <fstream>
 #include <span>
 #include <stdexcept>
+#include "logger.h"
+
 
 namespace {
   constexpr std::size_t kMinVaultSize = 4 + 16 + 12 + 16;  // version + salt + nonce + tag
@@ -70,6 +72,7 @@ void PasswordVault::writeVault(const VaultFile& vault) {
     {
         std::ofstream file(temp_name, std::ios::binary | std::ios::trunc);
         if (!file) {
+            logEvent(LOG_ERR, "could not create vault");
             throw std::runtime_error("cant create vault file");
         }
         std::filesystem::permissions(temp_name,
@@ -83,8 +86,12 @@ void PasswordVault::writeVault(const VaultFile& vault) {
         file.close();
         if (!file) {
             std::filesystem::remove(temp_name);
+             logEvent(LOG_ERR, "failed to write vault file");
+
             throw std::runtime_error("failed to write vault file");
         }
     }
     std::filesystem::rename(temp_name, vault_name);
+    logEvent(LOG_INFO, "successfully wrote vault file.");
+    
 }

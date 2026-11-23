@@ -11,8 +11,6 @@ namespace {
       }
   }
 
-  // Finds one length-prefixed field in data, starting at pos, and advances pos past it.
-  // Returns a pointer to the field's bytes and its length.
   std::pair<const unsigned char*, std::size_t> readField(const CryptoPP::SecByteBlock& data,
                                                          std::size_t& pos) {
       if (pos >= data.size()) {
