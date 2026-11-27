@@ -6,6 +6,12 @@
 #include <fstream>
 #include <span>
 #include <stdexcept>
+#include <system_error>
+#include <vector>
+#include <cerrno>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
 #include "logger.h"
 
 
@@ -14,8 +20,31 @@ namespace {
   constexpr std::size_t kMaxVaultSize = 4 * 1024 * 1024;
 
   template <typename Bytes>
-  void writeBytes(std::ofstream& file, const Bytes& bytes) {
-      file.write(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+  void appendBytes(std::vector<unsigned char>& buf, const Bytes& bytes) {
+      buf.insert(buf.end(), bytes.begin(), bytes.end());
+  }
+
+  struct Fd {
+      int fd;
+      explicit Fd(int f) : fd(f) {}
+      ~Fd() { if (fd >= 0) ::close(fd); }
+      Fd(const Fd&) = delete;
+      Fd& operator=(const Fd&) = delete;
+  };
+
+  void throwErrno(const char* what) {
+      throw std::system_error(errno, std::generic_category(), what);
+  }
+
+  void writeAll(int fd, std::span<const unsigned char> data) {
+      while (!data.empty()) {
+          ssize_t n = ::write(fd, data.data(), data.size());
+          if (n < 0) {
+              if (errno == EINTR) continue;
+              throwErrno("failed to write vault file");
+          }
+          data = data.subspan(static_cast<std::size_t>(n));
+      }
   }
   }
 
@@ -68,30 +97,63 @@ VaultFile PasswordVault::readVault() {
 }
 
 void PasswordVault::writeVault(const VaultFile& vault) {
-    const std::string temp_name = vault_name + ".tmp";
-    {
-        std::ofstream file(temp_name, std::ios::binary | std::ios::trunc);
-        if (!file) {
-            logEvent(LOG_ERR, "could not create vault");
-            throw std::runtime_error("cant create vault file");
-        }
-        std::filesystem::permissions(temp_name,
-                                     std::filesystem::perms::owner_read | std::filesystem::perms::owner_write,
-                                     std::filesystem::perm_options::replace);
-        writeBytes(file, vault.version);
-        writeBytes(file, vault.salt);
-        writeBytes(file, vault.nonce);
-        writeBytes(file, vault.ciphertext);
-        writeBytes(file, vault.tag);
-        file.close();
-        if (!file) {
-            std::filesystem::remove(temp_name);
-             logEvent(LOG_ERR, "failed to write vault file");
+    const std::filesystem::path path(vault_name);
+    const std::filesystem::path dir = path.has_parent_path() ? path.parent_path() : std::filesystem::path(".");
+    const std::string name = path.filename().string();
+    const std::string temp_name = name + ".tmp";
 
-            throw std::runtime_error("failed to write vault file");
+    Fd dirfd(::open(dir.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC));
+    if (dirfd.fd < 0) {
+        logEvent(LOG_ERR, "could not open vault directory");
+        throwErrno("cant open vault directory");
+    }
+    struct stat st{};
+    if (::fstat(dirfd.fd, &st) != 0) {
+        throwErrno("cant stat vault directory");
+    }
+    if (st.st_uid != ::geteuid() || (st.st_mode & (S_IWGRP | S_IWOTH))) {
+        logEvent(LOG_ERR, "insecure vault directory");
+        throw std::runtime_error("vault directory must be owned by you and not group/world-writable");
+    }
+
+    if (::unlinkat(dirfd.fd, temp_name.c_str(), 0) != 0 && errno != ENOENT) {
+        throwErrno("cant remove stale temp file");
+    }
+
+    {
+        Fd file(::openat(dirfd.fd, temp_name.c_str(),
+                         O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600));
+        if (file.fd < 0) {
+            logEvent(LOG_ERR, "could not create vault");
+            throwErrno("cant create vault file");
+        }
+
+        std::vector<unsigned char> buf;
+        buf.reserve(vault.version.size() + vault.salt.size() + vault.nonce.size()
+                    + vault.ciphertext.size() + vault.tag.size());
+        appendBytes(buf, vault.version);
+        appendBytes(buf, vault.salt);
+        appendBytes(buf, vault.nonce);
+        appendBytes(buf, vault.ciphertext);
+        appendBytes(buf, vault.tag);
+
+        try {
+            writeAll(file.fd, buf);
+            if (::fsync(file.fd) != 0) {
+                throwErrno("failed to write vault file");
+            }
+        } catch (...) {
+            ::unlinkat(dirfd.fd, temp_name.c_str(), 0);
+            logEvent(LOG_ERR, "failed to write vault file");
+            throw;
         }
     }
-    std::filesystem::rename(temp_name, vault_name);
+    if (::renameat(dirfd.fd, temp_name.c_str(), dirfd.fd, name.c_str()) != 0) {
+        ::unlinkat(dirfd.fd, temp_name.c_str(), 0);
+        logEvent(LOG_ERR, "failed to replace vault file");
+        throwErrno("failed to replace vault file");
+    }
+    ::fsync(dirfd.fd);
     logEvent(LOG_INFO, "successfully wrote vault file.");
-    
+
 }

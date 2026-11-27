@@ -39,3 +39,18 @@ TEST_CASE("long password entry is rejected") {
     };
     CHECK_THROWS_AS(serializeEntries(entries), std::runtime_error);
 }
+
+TEST_CASE("tampering is detected") {
+    CryptoModule crypto;
+    CryptoPP::SecByteBlock pw(reinterpret_cast<const unsigned char*>("pw"), 2);
+    CryptoPP::SecByteBlock pt(reinterpret_cast<const unsigned char*>("data"), 4);
+    VaultFile v = crypto.encrypt(pw, pt);
+
+    SUBCASE("version")    { v.version[0] ^= 1; }
+    SUBCASE("salt")       { v.salt[0] ^= 1; }
+    SUBCASE("nonce")      { v.nonce[0] ^= 1; }
+    SUBCASE("ciphertext") { v.ciphertext[0] ^= 1; }
+    SUBCASE("tag")        { v.tag[0] ^= 1; }
+
+    CHECK_THROWS_AS(crypto.decrypt(pw, v), std::runtime_error);
+  }
